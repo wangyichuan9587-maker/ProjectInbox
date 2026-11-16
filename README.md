@@ -66,7 +66,7 @@ project-inbox refresh
 
 ## 安装与维护
 
-当前使用 Python 3.13.13、MCP SDK 2.3.0、PyYAML 6.0.3，以及 Backlog.md **1.53.0-project-inbox.8**（归档编号保留、中文界面、单条/多选 Agent 交接、只读调研交接、合并部署勾选项、卡片标签显示修复与待验收状态）。Python / npm / 上游源码依赖均有锁定信息。
+当前使用 Python 3.13.13、MCP SDK 2.3.0、PyYAML 6.0.3，以及 Backlog.md **1.53.0-project-inbox.9**（归档编号保留、中文界面、单条/多选 Agent 交接、只读调研交接、合并部署勾选项、卡片标签显示修复、待验收状态与流程体验）。Python / npm / 上游源码依赖均有锁定信息。
 
 当前机器已安装完成。重建和跨机器安装见 [Backlog 接入说明](docs/backlog-integration.md)；不要改用未经补丁的官方二进制写入当前库。
 

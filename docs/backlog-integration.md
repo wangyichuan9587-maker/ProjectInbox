@@ -107,3 +107,16 @@ npm ci --ignore-scripts --no-audit --no-fund
 ## 完成后直接合并部署勾选项
 
 运行时 `1.53.0-project-inbox.8` 在任务详情和「已选 N 项」工具栏增加「先调研」按钮。它通过 `mode=research` 生成只读调研指令，调研结果要求回填原任务 notes 并进入待验收；「复制给 Agent」继续生成执行指令。原有「完成后直接合并部署」勾选项只对执行模式生效，默认不勾选。研究交接补丁为 `patches/backlog-1.53.0-research-handoff.patch`，构建清单的 `research_files_sha256` 校验从中文、执行交接和待验收补丁之后的源码输入，防止覆盖未知版本。
+
+## 流程体验（2026-11-16）
+
+运行时 `1.53.0-project-inbox.9` 让看板直接回答「哪张卡在等我、我该做什么」。补丁 `patches/backlog-1.53.0-flow-ux.patch` 在调研交接补丁之后应用，只改界面，不新增接口，不改任务文件格式；构建清单 `ux_files_sha256` 校验 9 个文件的前后 SHA（含 2 个新增文件）。
+
+- 任务详情：带「交接单」标签的卡在待验收、受阻、收件箱且「待确认」时，顶部出现「下一步」提示。待验收给出 `project-inbox accept TASK-N` 和 `project-inbox reject TASK-N --comment "…"`，受阻给出 `project-inbox cancel TASK-N --reason "…"` 并说明答复后怎样回到待办，每条命令可一键复制；剪贴板被拒绝时不提示成功，而是替你选中整条命令，按复制键即可。验收、退回、取消仍然只在命令行里执行。其余状态不显示提示。
+- 任务详情：待验收和受阻的卡，「完成总结」（汇报单）排在最前面，不用再翻过参考链接、修改的文件等空分区。其他状态顺序不变。
+- 看板：列的最小宽度由 256px 改为 204px。1440 宽、侧栏展开时收件箱到受阻五列不用横向滚动，收起侧栏六列全部显示；宽屏照常拉伸。
+- 卡片：受阻的卡直接显示汇报单里的受阻原因（最多三行）；「待确认」标签用琥珀色；待验收的卡也显示验收进度（例如 3/4）。验收进度从卡片右上角挪到底部日期旁，窄卡片上不再把编号、类型、项目挤成一条窄列。
+- 汇报单：受阻原因单独成段（`server/contract.py`），此前在详情里会和「改了什么」接成同一段。
+- 补齐漏翻的英文：已完成列底部的「收起旧任务」、收起对话框、列表页的「显示 N / M 条」和验收进度的悬停提示。
+
+界面测试入口：`node_modules/@oven/bun-darwin-aarch64/bin/bun test tests/`，新增 `tests/web-flow-ux.test.tsx` 4 项。回滚：停止看板服务，从 `patches/backlog-source.json` 移除 `ux_patch`、`ux_files_sha256` 并把 `runtime_version` 改回 `.8`，在 `scripts/build_backlog.py` 去掉对应一段后重建；不需要回退任务库。

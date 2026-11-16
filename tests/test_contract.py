@@ -97,6 +97,8 @@ def test_blocked_report_needs_reason_and_screenshot_paths_rejected():
         validate_report(blocked, h, 'TASK-12')
     blocked['blocked_reason'] = '需要数据库权限'
     assert validate_report(blocked, h, 'TASK-12')['outcome'] == 'blocked'
+    # 受阻原因单独成段，看板卡片也靠这一行显示卡在哪里
+    assert '**受阻：** 需要数据库权限\n\n**改了什么：** 没做完' in render_summary(validate_report(blocked, h, 'TASK-12'), [])
     sneaky = copy.deepcopy(EXAMPLE_REPORT)
     sneaky['screenshots'] = ['../../etc/passwd']
     with pytest.raises(ContractError, match='只写文件名'):

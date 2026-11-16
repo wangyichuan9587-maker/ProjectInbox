@@ -4,7 +4,7 @@
   "commit": "fd20f71493fb4eda44b021aa89f257956f17fb71",
   "archive_sha256": "996efd57e64b0e16f6790736d45cc3f20124cdab404a4b69bdf5bca2cd85cfed",
   "patch": "patches/backlog-1.53.0-retain-archived-ids.patch",
-  "runtime_version": "1.53.0-project-inbox.8",
+  "runtime_version": "1.53.0-project-inbox.9",
   "compiler": "bun@1.4.3",
   "patched_file_sha256": "957cdabbf9b5e227f8b7637ff4900bfac7c2fd848579046d140ea11b277e5b91",
   "web_patch": "patches/backlog-1.53.0-zh-cn.patch",
@@ -221,6 +221,45 @@
     "src/web/hooks/useAgentHandoff.ts": {
       "before": "932c17255de3cdefa3a317012bc913ba58901259144e73b87cc61e45252d8cd5",
       "after": "0857f3cf6614c3c3e48f13fd5658014b4cb430de8bc5ab7612ea715e3e069308"
+    }
+  },
+  "ux_patch": "patches/backlog-1.53.0-flow-ux.patch",
+  "ux_files_sha256": {
+    "src/web/components/AcceptanceCriteriaProgress.tsx": {
+      "before": "5540f5c2882c4e95f96e4f249e2644bad710657e7b4a0723f5fad2d0a7eeef14",
+      "after": "8f0bd1f33638557b23006367a2ea3e58dcd898a96a71a247ba5fe2fa0a626ed9"
+    },
+    "src/web/components/Board.tsx": {
+      "before": "5c351275623d51bb2850338c13dd808ed047163d26f229fbde764ec9c8ffb3f2",
+      "after": "48facdba2b12afc253fbfd606d3517f2c43b1c7d678f81f26d40f47624843699"
+    },
+    "src/web/components/CleanupModal.tsx": {
+      "before": "ec4a50c7f5e900dfc9455e44abbbb1926eeca7dfd92974b35b5c60184a205501",
+      "after": "5cea4e58bc0340fd8aef47089d25777b022dea6a4414eb66d9668f65658f2cd9"
+    },
+    "src/web/components/FlowNextStepPanel.tsx": {
+      "before": null,
+      "after": "3fc71e7dcd4c1900e48994cf9b5206612a84606f7bc1eea7804287f2032784e0"
+    },
+    "src/web/components/TaskCard.tsx": {
+      "before": "09327b611634fb530d0a1014cc43ca602b51aa924bd244feeb1f4b3158de7dd9",
+      "after": "a28e129fa4d0935998e82130344cf9ef6a3e5b4f710c383a8712bc8e1092ce01"
+    },
+    "src/web/components/TaskColumn.tsx": {
+      "before": "e2522ff71b35920e1a621ebdb518c772a6803a86f22c76d6c5d1745f4b050eaf",
+      "after": "c89b614a4cde75e24cb494b1546b21d8349a1203d2154ef38645db7c6feed666"
+    },
+    "src/web/components/TaskDetailsModal.tsx": {
+      "before": "a29c2e6981665486784d6bf272c5bf088bac723f183dbcf1431f63a5fd399bba",
+      "after": "a8a069137ee8aecfebf285e4e3ba41b78f17c8f07b81fb4b8d7a8005871bb662"
+    },
+    "src/web/components/TaskList.tsx": {
+      "before": "7687767641b89f7e4b614e4b87560f89815b401b786f2f428be854d0f36585c8",
+      "after": "ad2ae6210618ca52a18715fbb8abe83fe4e73effc9ab21b63adc4cf2e14d6c13"
+    },
+    "src/web/utils/flow-next-step.ts": {
+      "before": null,
+      "after": "499570856f60d7d6ff7373a2a00d4fd06e4db43ac0100e4da0ee0f8de9a613cc"
     }
   }
 }

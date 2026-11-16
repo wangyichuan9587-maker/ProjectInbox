@@ -405,7 +405,8 @@ def render_summary(report, checks, reviewer_note=''):
     """汇报单 + 程序核验结果，写进卡片的「最终总结」。"""
     lines = ['### 汇报单 ' + REPORT_VERSION]
     if report['outcome'] == 'blocked':
-        lines += ['**受阻：** ' + report['blocked_reason']]
+        # 后面空一行：否则 Markdown 会把受阻原因和「改了什么」接成同一段
+        lines += ['**受阻：** ' + report['blocked_reason'], '']
     lines += ['**改了什么：** ' + report['summary'], '', '**在哪看：** ' + report['where_to_see'], '', '**验收结果：**']
     for ident, item in report['acceptance'].items():
         extra = '；'.join(x for x in [item['note'], ('截图 ' + item['screenshot']) if item['screenshot'] else ''] if x)

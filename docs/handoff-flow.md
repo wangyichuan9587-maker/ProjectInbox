@@ -90,5 +90,5 @@ uv run python -m scripts.install_skills --target codex   # 装成 Codex 自定�
 
 ## 还没做
 
-- 看板上的「验收通过」「退回」按钮（需要改看板补丁并重新编译，目前用命令行）。
+- 看板上的「验收通过」「退回」按钮（需要改看板补丁并重新编译，目前用命令行）。运行时 `1.53.0-project-inbox.9` 起，待验收、受阻、待确认的卡在详情顶部直接给出该运行的命令，可一键复制，见 [Backlog 接入说明](backlog-integration.md)。
 - 第 6 步交叉审查、按风格派给不同 agent。

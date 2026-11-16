@@ -231,4 +231,4 @@ class TaskManager:
 
     def check_integrity(self):
         with self.store.lock():tasks,issues=self.scan()
-        return dict(ok=not issues,tasks=len(tasks),issues=issues,backend='backlog.md@1.53.0-project-inbox.8')
+        return dict(ok=not issues,tasks=len(tasks),issues=issues,backend='backlog.md@1.53.0-project-inbox.9')

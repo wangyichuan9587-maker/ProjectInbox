@@ -1,4 +1,4 @@
-"""重建锁定版本的 Backlog.md，应用归档 ID、中文界面、Agent 交接、调研交接与待验收状态补丁。"""
+"""重建锁定版本的 Backlog.md，应用归档 ID、中文界面、Agent 交接、调研交接、待验收状态与流程体验补丁。"""
 from pathlib import Path
 import hashlib,json,os,subprocess,tarfile
 
@@ -32,7 +32,7 @@ def main():
             path=source/relative
             actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
             # 后续补丁会继续修改部分界面文件，以最后一层补丁的结果为准。
-            finals=[spec.get(name,{}).get(relative,{}).get('after') for name in ['handoff_files_sha256','review_files_sha256','research_files_sha256']]
+            finals=[spec.get(name,{}).get(relative,{}).get('after') for name in ['handoff_files_sha256','review_files_sha256','research_files_sha256','ux_files_sha256']]
             if actual!=hashes[key] and not (key=='after' and actual in [f for f in finals if f]):return False
         return True
     if not web_matches('after'):
@@ -45,8 +45,8 @@ def main():
         for relative,hashes in spec['handoff_files_sha256'].items():
             path=source/relative
             actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-            research_final=spec.get('research_files_sha256',{}).get(relative,{}).get('after')
-            if actual!=hashes[key] and not (key=='after' and actual==research_final):return False
+            finals=[spec.get(name,{}).get(relative,{}).get('after') for name in ['research_files_sha256','ux_files_sha256']]
+            if actual!=hashes[key] and not (key=='after' and actual in [f for f in finals if f]):return False
         return True
     if not handoff_matches('after'):
         if not handoff_matches('before'):
@@ -58,7 +58,8 @@ def main():
         for relative,hashes in spec['review_files_sha256'].items():
             path=source/relative
             actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-            if actual!=hashes[key]:return False
+            # 流程体验补丁会继续修改这些文件，以最后一层补丁的结果为准。
+            if actual!=hashes[key] and not (key=='after' and actual==spec.get('ux_files_sha256',{}).get(relative,{}).get('after')):return False
         return True
     if not review_matches('after'):
         if not review_matches('before'):
@@ -70,7 +71,7 @@ def main():
         for relative,hashes in spec['research_files_sha256'].items():
             path=source/relative
             actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-            if actual!=hashes[key]:return False
+            if actual!=hashes[key] and not (key=='after' and actual==spec.get('ux_files_sha256',{}).get(relative,{}).get('after')):return False
         return True
     if not research_matches('after'):
         if not research_matches('before'):
@@ -78,6 +79,18 @@ def main():
         subprocess.run(['/usr/bin/patch','-p1','-i',str(root/spec['research_patch'])],cwd=source,check=True)
     if not research_matches('after'):
         raise ValueError('调研交接补丁校验失败')
+    def ux_matches(key):
+        for relative,hashes in spec['ux_files_sha256'].items():
+            path=source/relative
+            actual=hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+            if actual!=hashes[key]:return False
+        return True
+    if not ux_matches('after'):
+        if not ux_matches('before'):
+            raise ValueError('流程体验源码与固定补丁的输入不一致，拒绝覆盖')
+        subprocess.run(['/usr/bin/patch','-p1','-i',str(root/spec['ux_patch'])],cwd=source,check=True)
+    if not ux_matches('after'):
+        raise ValueError('流程体验补丁校验失败')
     bun=root/'node_modules/@oven/bun-darwin-aarch64/bin/bun'
     subprocess.run([str(bun),'install','--frozen-lockfile','--ignore-scripts'],cwd=source,check=True)
     output=root/'vendor/backlog-runtime/backlog'
