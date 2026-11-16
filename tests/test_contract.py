@@ -101,3 +101,19 @@ def test_blocked_report_needs_reason_and_screenshot_paths_rejected():
     sneaky['screenshots'] = ['../../etc/passwd']
     with pytest.raises(ContractError, match='只写文件名'):
         validate_report(sneaky, h, 'TASK-12')
+
+
+def test_malformed_values_are_refused_instead_of_crashing():
+    odd_kind = handoff()
+    odd_kind['acceptance'][0]['kind'] = ['必须看到']
+    refused(odd_kind, 'A1 的 kind 只能是')
+    odd_keys = handoff()
+    odd_keys[1] = 'yaml 里的数字键'
+    odd_keys[None] = '空键'
+    error = refused(odd_keys, '不认识的字段')
+    assert '1' in str(error) and 'None' in str(error)
+    h = validate_handoff(handoff(), PROJECTS)
+    odd_report = copy.deepcopy(EXAMPLE_REPORT)
+    odd_report[7] = 'x'
+    with pytest.raises(ContractError, match='不认识的字段：7'):
+        validate_report(odd_report, h, 'TASK-12')

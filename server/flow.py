@@ -222,7 +222,7 @@ class Flow:
         facts, problems, test = {}, [], None
         if report['outcome'] == 'done':
             problems += checks.evidence(evidence_dir, report['screenshots'], handoff['verify']['screenshots'])
-            git_problems, facts = checks.commits(claim['workspace'], claim['base_commit'], claim.get('reported_head', ''), claim['branch'])
+            git_problems, facts = checks.commits(claim['workspace'], claim['base_commit'], claim.get('reported_head', ''), claim['branch'], claim.get('base_branch', ''))
             problems += git_problems
             if not git_problems:
                 timeout = int(self.registry.settings().get('verify_timeout_seconds', 900))
@@ -286,6 +286,10 @@ class Flow:
                     raise ValueError(f'工作区 {claim["workspace"]} 里有没提交的改动，先处理再验收')
                 if facts['exists'] and facts['branch'] != claim['branch']:
                     raise ValueError(f'工作区 {claim["workspace"]} 现在在 {facts["branch"] or "（不在任何分支上）"}，不是任务分支 {claim["branch"]}，先切回再验收')
+                # 程序核验（重跑测试、查提交）的是汇报那一刻的提交；之后加到任务分支上的提交没人查过，不能跟着一起合并
+                reported, tip = claim.get('reported_head'), ws.branch_head(claim['repo'], claim['branch'])
+                if reported and tip and tip != reported:
+                    raise ValueError(f'任务分支 {claim["branch"]} 在汇报之后又有了新提交（汇报时 {reported[:8]}，现在 {tip[:8]}），这些提交没有经过程序核验。可以 reject 退回，让 agent 重新汇报；确认无误想直接用，就自己合并后运行 project-inbox accept {task_id} --no-merge')
                 result['merged_head'] = ws.merge_fast_forward(claim['repo'], claim['branch'], claim['base_branch'])
                 result['merged'] = True
                 # 合并已经完成，删工作区失败不能让卡片停在待验收：照常标完成，把原因写进结果和备注
@@ -413,7 +417,13 @@ class Flow:
     def workspace_scan(self):
         with self.store.lock():
             tasks = self.tasks.healthy_tasks()
-        return ws.scan(self.registry.list_projects(), tasks)
+        # 还没收尾的卡正在用哪个工作区，以领取记录为准：返工卡沿用原卡的文件夹，名字里是原卡的编号
+        owners = {}
+        for task in tasks:
+            claim = None if task['status'] in ['done', 'archived'] else self.claim(task['id'])
+            if claim and claim.get('workspace'):
+                owners[str(Path(claim['workspace']).resolve())] = task['id']
+        return ws.scan(self.registry.list_projects(), tasks, owners)
 
     def workspace_clean(self, apply=False):
         rows = self.workspace_scan()
@@ -432,6 +442,7 @@ class Flow:
                 warnings.append(f"{task['id']} 在进行中，但不是通过 claim_tasks 领取的")
             if task['status'] == 'review' and HANDOFF_LABEL in task['tags'] and not self._load('reports', task['id']):
                 warnings.append(f"{task['id']} 在待验收，但没有汇报单")
-            if claim and claim.get('active') and task['status'] != 'in_progress':
+            # 汇报通过后卡片在待验收，领取记录要到 accept / reject 才结束：这是正常状态，不算对不上
+            if claim and claim.get('active') and task['status'] not in ['in_progress', 'review']:
                 warnings.append(f"{task['id']} 有进行中的领取记录，但卡片状态是 {task['status']}（可能在看板上被拖动过）")
         return warnings

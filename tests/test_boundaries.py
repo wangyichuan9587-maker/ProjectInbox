@@ -99,3 +99,51 @@ def test_metadata_size_is_bounded_even_if_file_grows(tmp_path):
     p=tmp_path/'project';p.mkdir()
     (p/'README.md').write_text('x'*70000)
     assert metadata(p)==''
+
+
+def test_refresh_never_writes_a_registry_it_cannot_read(tmp_path):
+    # 下划线开头的目录名、不同位置的同名目录，都曾让刷新写出一份之后所有命令都读不了的注册表。
+    from server.project_registry import Registry, ID_RE
+    from server.task_manager import TaskManager
+    scan=tmp_path/'scan';scan.mkdir();root=tmp_path/'app';setup_activity(root,scan)
+    for path in [scan/'_sandbox',scan/'groupa'/'web',scan/'groupb'/'web']:
+        path.parent.mkdir(exist_ok=True);repo(path)
+    r=Registry(root)
+    found=r.refresh_projects()
+    assert len(found)==3 and all(ID_RE.fullmatch(p['id']) for p in found)
+    assert len({p['name'].casefold() for p in found})==3
+    # 两个 web 谁先登记取决于提交时间，不固定：先到的保留原名，后到的加上上级目录名。
+    webs={p['name']:p for p in found if Path(p['path']).name=='web'}
+    renamed=next(p for name,p in webs.items() if name!='web')
+    assert set(webs)=={'web',Path(renamed['path']).parent.name+'-web'}
+    assert [p['name'] for p in r.list_projects()]==[p['name'] for p in found]
+    assert TaskManager(root).create_task(project_id=renamed['name'],title='同名项目也能建卡')['project']==renamed['id']
+    again=Registry(root).refresh_projects()
+    assert sorted((p['id'],p['name']) for p in again)==sorted((p['id'],p['name']) for p in found)
+
+
+def test_broken_yaml_config_is_a_readable_error(tmp_path):
+    from server.project_registry import Registry
+    root=tmp_path/'app';(root/'config').mkdir(parents=True)
+    (root/'config/projects.yaml').write_text('projects:\n- id: editr\n  name: editr\n   aliases: [oops\n')
+    with pytest.raises(ValueError,match='config/projects.yaml 不是合法的 YAML'):Registry(root).list_projects()
+    shown=subprocess.run([sys.executable,'-m','server.cli','--home',str(root),'projects'],capture_output=True,text=True)
+    assert shown.returncode==2 and 'Traceback' not in shown.stderr and '不是合法的 YAML' in shown.stderr
+    (root/'config/projects.yaml').write_text(yaml.safe_dump({'projects':[{'id':123,'name':'数字 ID'}]}))
+    with pytest.raises(ValueError,match='项目 ID 无效'):Registry(root).list_projects()
+
+
+def test_sources_stay_python_311_compatible():
+    # pyproject 声明支持 3.11；f-string 的表达式里带反斜杠要 3.12 才合法，在 3.11 上整个模块导入不了。
+    import io, tokenize
+    if not hasattr(tokenize,'FSTRING_START'):return  # 3.11 自己会在导入时报语法错误
+    root=Path(__file__).resolve().parents[1]
+    offenders=[]
+    for path in sorted([*(root/'server').glob('*.py'),*(root/'scripts').glob('*.py')]):
+        depth=0
+        for token in tokenize.generate_tokens(io.StringIO(path.read_text(encoding='utf-8')).readline):
+            if token.type==tokenize.FSTRING_START:depth+=1
+            elif token.type==tokenize.FSTRING_END:depth-=1
+            elif depth and '\\' in token.string and (token.type!=tokenize.FSTRING_MIDDLE or depth>1):
+                offenders.append(f'{path.name}:{token.start[0]}')
+    assert not offenders,offenders

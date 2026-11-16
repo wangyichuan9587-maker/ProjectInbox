@@ -21,6 +21,17 @@ def text(value,limit,field):
     return value
 
 
+def created_id(output):
+    """从 Backlog 新建任务的回显里取编号。
+
+    回显先是「File: …/task-5 - 标题.md」，再是「Task TASK-5 - 标题」。标题里可能提到别的任务
+    （「修复 TASK-2 引入的回归」），所以不能取全文第一个 TASK-N，只认标题行的行首和文件名。
+    """
+    match=re.search(r'^Task (TASK-[0-9]+(?:\.[0-9]+)*) - ',output,re.M) or re.search(r'^File: .*/(task-[0-9]+(?:\.[0-9]+)*) - [^/\n]*$',output,re.M|re.I)
+    if not match:raise ValueError('未从 Backlog 响应获得 ID，请查询后再重试')
+    return match[1].upper()
+
+
 class TaskManager:
     def __init__(self,root):
         self.registry=Registry(root)
@@ -109,13 +120,19 @@ class TaskManager:
         if issues:raise ValueError('数据完整性异常，请运行 project-inbox check')
         return tasks
 
-    def _validate(self,task):
-        title=text(task['title'],500,'title')
-        if not title.strip() or '\n' in title or '\r' in title:raise ValueError('标题必须是非空单行文本')
+    def _validate(self,task,only=None):
+        """only 为 None 时检查全部字段（新建）；更新时只检查这次要改的字段。
+        否则程序追加或看板里写长了的旧内容，会让无关的修改（例如只改状态）也被拒绝。"""
+        wanted=lambda field:only is None or field in only
+        if wanted('title'):
+            title=text(task['title'],500,'title')
+            if not title.strip() or '\n' in title or '\r' in title:raise ValueError('标题必须是非空单行文本')
         for key,choices in [('type',TYPES),('status',STATUSES),('priority',PRIORITIES)]:
-            if not isinstance(task[key],str) or task[key] not in choices:raise ValueError('任务类型、状态或优先级无效')
-        for field in ['description','expected_behavior','reproduction_steps','notes']:text(task.get(field,''),20000,field)
+            if wanted(key) and (not isinstance(task[key],str) or task[key] not in choices):raise ValueError('任务类型、状态或优先级无效')
+        for field in ['description','expected_behavior','reproduction_steps','notes']:
+            if wanted(field):text(task.get(field,''),20000,field)
         for field,maximum,length in [('tags',50,100),('commits',100,200)]:
+            if not wanted(field):continue
             values=task.get(field,[])
             if not isinstance(values,list) or len(values)>maximum:raise ValueError(field+' 列表超限')
             for value in values:
@@ -135,10 +152,7 @@ class TaskManager:
         args=['task','create','--plain','--type='+task['type'],'--status='+STATES[task['status']],'--priority='+task['priority'],'--description='+self._description(task['description'],task.get('expected_behavior',''),task.get('reproduction_steps',''))]
         if project:args.append('--project='+project['name'])
         if task['tags']:args.append('--labels='+','.join(task['tags']))
-        output=self.backend.run(*args,*extra,'--',task['title'])
-        match=re.search(r'\b(TASK-[0-9]+(?:\.[0-9]+)*)\b',output)
-        if not match:raise ValueError('未从 Backlog 响应获得 ID，请查询后再重试')
-        return match[1]
+        return created_id(self.backend.run(*args,*extra,'--',task['title']))
 
     def get_task(self,task_id,_locked=False):
         self._id(task_id)
@@ -148,7 +162,8 @@ class TaskManager:
         if found is None:raise ValueError('任务不存在')
         return found
 
-    def update_task(self,task_id,**changes):
+    def update_task(self,task_id,/,**changes):
+        # task_id 只按位置传：changes 里出现同名键时走下面的字段检查，而不是抛 TypeError
         self._id(task_id)
         allowed={'project_id','title','type','status','description','expected_behavior','reproduction_steps','notes','priority','tags','commits'}
         if not changes or set(changes)-allowed:raise ValueError('更新字段为空或含禁止修改字段')
@@ -156,7 +171,7 @@ class TaskManager:
         with self.store.lock():
             original=self.get_task(task_id,_locked=True)
             if original['status']=='archived':raise ValueError('归档任务为只读，不自动恢复或覆盖')
-            task=dict(original,**changes);self._validate(task)
+            task=dict(original,**changes);self._validate(task,set(changes))
             if task['status']=='archived':raise ValueError('请单独调用归档工具')
             args=['task','edit',task_id,'--plain']
             for field,flag in [('title','title'),('type','type'),('priority','priority'),('notes','notes')]:

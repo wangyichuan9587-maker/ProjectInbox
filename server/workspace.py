@@ -12,7 +12,8 @@ import subprocess
 
 WORKTREES_DIR = '.worktrees'
 GIT_ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/var/empty', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0', 'LC_ALL': 'C'}
-TASK_IN_NAME = re.compile(r'(?<![0-9a-z])task[-_ ]?([1-9][0-9]*)(?![0-9])', re.I)
+# 子任务编号（task-5.2）要整段认出来，否则会被当成 TASK-5
+TASK_IN_NAME = re.compile(r'(?<![0-9a-z])task[-_ ]?([1-9][0-9]*(?:\.[1-9][0-9]*)*)(?![0-9])', re.I)
 
 
 def git(cwd, *args, timeout=60, check=True):
@@ -87,6 +88,11 @@ def ensure_worktree(project_path, task_id, inherit=None):
         base_branch = current_branch(repo)
         base_commit = git(repo, 'rev-parse', 'HEAD')
     known = {w['path']: w for w in worktrees(repo)}
+    if str(workspace.resolve()) in known and not workspace.is_dir():
+        # 文件夹被手动删掉、git 里还留着登记：不能当成「沿用已有」把一个不存在的路径发给 agent。
+        # 清掉登记后往下走，按任务分支重建（提交都还在分支上）。
+        git(repo, 'worktree', 'prune')
+        known = {w['path']: w for w in worktrees(repo)}
     if str(workspace.resolve()) in known:
         existing = known[str(workspace.resolve())]
         if existing['branch'] != branch:
@@ -105,15 +111,28 @@ def ensure_worktree(project_path, task_id, inherit=None):
     return dict(repo=str(repo), workspace=str(workspace.resolve()), branch=branch, base_branch=base_branch, base_commit=base_commit, reused=exists)
 
 
-def state(workspace, base_commit):
-    """工作区的事实：当前提交、base 之后的新提交、没提交的改动。程序自己读，不信 agent 写的。"""
+def branch_head(repo, branch):
+    """任务分支当前指向的提交；分支不存在时返回空字符串。"""
+    result = git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}^{{commit}}', check=False)
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
+def state(workspace, base_commit, base_branch=''):
+    """工作区的事实：当前提交、base 之后的新提交、没提交的改动。程序自己读，不信 agent 写的。
+
+    给了 base_branch 时，主分支上已有的提交不算「新提交」：任务分支只是快进或变基到最新主分支，
+    并不代表 agent 提交了改动。
+    """
     path = Path(workspace)
     if not path.is_dir():
         return dict(exists=False, head='', branch='', commits=[], dirty=[])
     head = git(path, 'rev-parse', 'HEAD')
     current = git(path, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False)
     branch = current.stdout.strip() if current.returncode == 0 else ''
-    log = git(path, 'log', '--format=%h %s', f'{base_commit}..HEAD') if base_commit else ''
+    known = [base_commit] if base_commit else []
+    if known and base_branch and branch_head(path, base_branch):
+        known.append('refs/heads/' + base_branch)
+    log = git(path, 'log', '--format=%h %s', 'HEAD', '--not', *known) if known else ''
     dirty = [line for line in git(path, 'status', '--porcelain', '--untracked-files=all').splitlines() if line.strip()]
     return dict(exists=True, head=head, branch=branch, commits=[l for l in log.splitlines() if l.strip()], dirty=dirty)
 
@@ -171,9 +190,14 @@ def _unmerged(path, main_repo):
     return missing
 
 
-def scan(projects, tasks):
-    """列出每个已注册项目旁边多出来的工作区和复制品，不改动任何东西。"""
+def scan(projects, tasks, owners=None):
+    """列出每个已注册项目旁边多出来的工作区和复制品，不改动任何东西。
+
+    owners 是「工作区路径 → 正在用它的任务编号」（来自领取记录）。返工卡沿用原卡的工作区，
+    文件夹名还是原卡的编号；只看名字会把它算到已归档的原卡头上，当成可以清理。
+    """
     status = {t['id']: t['status'] for t in tasks}
+    owners = owners or {}
     rows, seen = [], set()
     for project in projects:
         raw = project.get('path', '')
@@ -216,7 +240,7 @@ def scan(projects, tasks):
             if is_git and not info['branch']:
                 result = git(path, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False)
                 row['branch'] = result.stdout.strip() if result.returncode == 0 else ''
-            row['task'] = _task_id(path.name, row['branch'])
+            row['task'] = owners.get(key) or _task_id(path.name, row['branch'])
             row['task_status'] = status.get(row['task'], 'unknown') if row['task'] else 'unknown'
             row['modified'] = _modified(path, is_git)
             if is_git:

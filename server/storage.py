@@ -87,5 +87,9 @@ class Storage:
     def yaml(self, relative, default):
         if not self.safe(relative).exists():
             return default
-        result = yaml.safe_load(self.read(relative))
+        try:
+            result = yaml.safe_load(self.read(relative))
+        except yaml.YAMLError as error:
+            # 命令行和 MCP 只把 ValueError 当成可读的错误；不转的话手工改坏一个配置就是一屏 traceback
+            raise ValueError(f'{relative} 不是合法的 YAML，请修正后重试：' + ' '.join(str(error).split())[:300]) from error
         return default if result is None else result

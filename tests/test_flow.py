@@ -2,6 +2,8 @@
 import copy
 import json
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
 import pytest
@@ -231,7 +233,9 @@ def test_board_copy_gives_short_claim_text_for_handoff_cards(flow):
     task_id = f.submit_handoff(handoff(), 'claude-code')['task_id']
     text = agent_handoff(f.root, task_id)['text']
     assert 'claim ' + task_id in text and 'submit-report' in text and 'git worktree' not in text
-    assert len(text) < 1500
+    # 指令里三次带上安装目录和 --home 的绝对路径：只量指令本身，结果不随安装位置和临时目录的长短变化
+    cli = shlex.join([str(Path(__file__).resolve().parents[1] / 'bin/project-inbox'), '--home', str(f.root)])
+    assert text.count(cli) == 3 and len(text.replace(cli, 'project-inbox')) < 1000
     legacy = f.tasks.create_task(project_id='editr', title='旧卡')
     assert 'git worktree' in agent_handoff(f.root, legacy['id'])['text']
 
@@ -346,7 +350,118 @@ def test_done_marks_without_merging_then_accept_can_merge(flow):
 
 def test_test_timeout_does_not_hang_on_detached_background_process(tmp_path, monkeypatch):
     from server import checks
-    monkeypatch.setattr(checks, 'DRAIN_SECONDS', 1)
     command = "perl -MPOSIX -e 'setsid(); sleep 5' & sleep 30"
     passed, output, seconds = checks.run_tests(tmp_path, command, 1)
     assert passed is False and '没跑完' in output and seconds < 5
+
+
+# ---------- 第二轮评审修复的回归测试 ----------
+
+def test_title_mentioning_another_task_gets_its_own_card(flow):
+    from server.task_manager import created_id
+    f, _ = flow
+    other = f.tasks.create_task(project_id='editr', title='无关的旧卡')
+    assert f.tasks.create_task(title=f"跟进 {other['id']} 的问题")['id'] != other['id']
+    result = f.submit_handoff(handoff(title=f"修复 {other['id']} 引入的回归"), 'claude-code')
+    assert result['task_id'] != other['id'] and result['status'] == 'todo'
+    assert f.handoff(result['task_id'])['title'].startswith('修复') and '交接单' in f.tasks.get_task(result['task_id'])['plan']
+    untouched = f.tasks.get_task(other['id'])
+    assert f.handoff(other['id']) is None and untouched['plan'] == '' and untouched['notes'] == ''
+    workspace = Path(f.claim_tasks('codex', [result['task_id']])['claimed'][0]['workspace'])
+    commit(workspace)
+    shot(f, result['task_id'])
+    assert f.submit_report(report(result['task_id']), 'codex')['accepted']
+    rework = f.reject(result['task_id'], '再改改')['rework_task']
+    assert rework not in [other['id'], result['task_id']] and f.handoff(rework)['rework_of'] == result['task_id']
+    assert f.handoff(other['id']) is None and f.claim(other['id']) is None
+    echoed = 'File: /x/backlog/tasks/task-7 - 见-TASK-2.md\n\nTask TASK-7 - 见 TASK-2\n====\n\nDescription:\n----\nTask TASK-9 - 假的标题行\n'
+    assert created_id(echoed) == 'TASK-7' and created_id('File: /x/backlog/tasks/task-3.1 - 见-TASK-2.md\n') == 'TASK-3.1'
+    with pytest.raises(ValueError, match='未从 Backlog'):
+        created_id('Created something mentioning TASK-2')
+
+
+def test_check_is_quiet_for_cards_waiting_for_acceptance(flow):
+    f, _ = flow
+    task_id, _ = finished(f)
+    assert f.tasks.get_task(task_id)['status'] == 'review' and f.claim(task_id)['active']
+    assert f.consistency() == []
+    f.tasks.update_task(task_id, status='todo')
+    assert any('看板上被拖动' in w for w in f.consistency())
+
+
+def test_claim_rebuilds_workspace_deleted_by_hand(flow):
+    f, _ = flow
+    task_id = f.submit_handoff(handoff(), 'claude-code')['task_id']
+    workspace = Path(f.claim_tasks('codex', [task_id])['claimed'][0]['workspace'])
+    commit(workspace)
+    f.release_task(task_id, '先放回', 'codex')
+    shutil.rmtree(workspace)
+    pack = f.claim_tasks('claude-code', [task_id])['claimed'][0]
+    assert pack['workspace'] == str(workspace) and (workspace / 'feature.txt').read_text() == 'ok\n'
+    assert git(workspace, 'symbolic-ref', '--short', 'HEAD') == task_id.lower()
+    shot(f, task_id)
+    assert f.submit_report(report(task_id), 'claude-code')['accepted']
+
+
+def test_accept_refuses_commits_added_after_report(flow):
+    f, project = flow
+    task_id, workspace = finished(f)
+    commit(workspace, 'later.txt', '汇报之后才加的\n')
+    with pytest.raises(ValueError, match='汇报之后又有了新提交'):
+        f.accept(task_id)
+    assert f.tasks.get_task(task_id)['status'] == 'review' and not (project / 'feature.txt').exists()
+    rework = f.reject(task_id, '把后加的提交也核验一遍')['rework_task']
+    f.claim_tasks('codex', [rework])
+    shot(f, rework)
+    assert f.submit_report(report(rework), 'codex')['accepted']
+    assert f.accept(rework)['merged'] and (project / 'later.txt').exists()
+
+
+def test_commits_already_on_main_do_not_count_as_new(flow):
+    f, project = flow
+    task_id = f.submit_handoff(handoff(verify={'tests': 'none', 'screenshots': False}), 'claude-code')['task_id']
+    pack = f.claim_tasks('codex', [task_id])['claimed'][0]
+    workspace = Path(pack['workspace'])
+    commit(project, 'main-only.txt')
+    git(workspace, 'merge', '-q', '--ff-only', pack['base_branch'])
+    plain = report(task_id, screenshots=[])
+    plain['acceptance']['A2'] = {'result': '实际操作验证'}
+    refused = f.submit_report(plain, 'codex')
+    assert not refused['accepted'] and any('没有新提交' in p for p in refused['problems'])
+    commit(workspace)
+    ok = f.submit_report(plain, 'codex')
+    assert ok['accepted'] and '1 个新提交' in ok['verified'][0]
+
+
+def test_clean_keeps_workspace_still_used_by_rework_card(flow):
+    f, _ = flow
+    task_id, workspace = finished(f)
+    rework = f.reject(task_id, '再改改')['rework_task']
+    f.claim_tasks('claude-code', [rework])
+    row = next(r for r in f.workspace_scan() if r['path'] == str(workspace))
+    assert row['task'] == rework and row['action'] == 'keep' and '还没完成' in row['reason']
+    assert f.workspace_clean(apply=True)['actions'] == [] and workspace.is_dir()
+    f.cancel(rework, '不做了')
+    assert not workspace.exists()
+
+
+def test_finished_test_command_is_not_failed_by_leftover_background_process(tmp_path):
+    from server import checks
+    passed, output, seconds = checks.run_tests(tmp_path, '(sleep 6 &) ; echo tests-ok', 3)
+    assert passed is True and 'tests-ok' in output and seconds < 3
+    passed, output, _ = checks.run_tests(tmp_path, 'echo 第一行; echo boom >&2; exit 3', 3)
+    assert passed is False and '第一行' in output and 'boom' in output
+
+
+def test_update_only_checks_the_fields_being_changed(flow):
+    f, _ = flow
+    task = f.tasks.create_task(project_id='editr', title='记录很长的旧卡')
+    for _ in range(5):
+        f._edit(task['id'], '--append-notes', '程序追加的记录' * 700)
+    assert len(f.tasks.get_task(task['id'])['notes']) > 20000
+    assert f.tasks.update_task(task['id'], status='review')['status'] == 'review'
+    with pytest.raises(ValueError, match='notes'):
+        f.tasks.update_task(task['id'], notes='x' * 20001)
+    base = [sys.executable, '-m', 'server.cli', '--home', str(f.root)]
+    odd = subprocess.run(base + ['update', task['id'], '--changes', '{"task_id":"TASK-9"}'], capture_output=True, text=True)
+    assert odd.returncode == 2 and '禁止修改字段' in json.loads(odd.stderr)['error']

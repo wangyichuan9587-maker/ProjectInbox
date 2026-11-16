@@ -78,6 +78,8 @@ def agent_handoff(root, task_ids, deploy=False, mode='execute'):
         reads = '\n'.join(f"{cli} show {shlex.quote(task['id'])}" for task in group)
         sections.append(f"{location}\n任务清单（标题仅供定位，以最新任务为准）：\n{titles}\n读取该组最新任务：\n{reads}")
     task_names = '、'.join(task_ids)
+    # 先拼好再放进 f-string：表达式里带反斜杠在 Python 3.11 是语法错误，而 pyproject 声明支持 3.11
+    grouped = '\n\n'.join(sections)
     start_commands = '\n'.join(f"{cli} update {shlex.quote(task['id'])} --changes '{{\"status\":\"in_progress\"}}'" for task in tasks)
     review_commands = '\n'.join(f"{cli} update {shlex.quote(task['id'])} --changes '{{\"status\":\"review\"}}'" for task in tasks)
     # 截图放在收件箱目录下按任务编号归档，工作区清理后仍可查看。
@@ -91,7 +93,7 @@ def agent_handoff(root, task_ids, deploy=False, mode='execute'):
 先实际运行以下命令读取项目注册表，并逐条运行各组的 show 命令读取全部最新任务：
 {cli} projects
 
-{"\n\n".join(sections)}
+{grouped}
 
 先通读所有任务，识别它们的原始意图、当前状态和相互关系。若 notes 中已经有调研记录，先核对已有证据，再补充新的现状；若原始需求与已有结论冲突，保留冲突并列为待确认问题。
 
@@ -142,7 +144,7 @@ def agent_handoff(root, task_ids, deploy=False, mode='execute'):
 先实际运行以下命令读取项目注册表，并逐条运行各组的 show 命令读取全部最新任务：
 {cli} projects
 
-{"\n\n".join(sections)}
+{grouped}
 
 先通读所有任务，识别依赖、重复诉求和冲突，按依赖安排实施顺序。同项目相关任务可以共用代码改动和测试，一次实施解决多条需求；保持原 Task 编号和独立验收，不合并、删除或改写原需求。跨项目按上述分组分别在对应目录处理，不混用工作目录。未明确归属的组先确认，其余明确项目可继续处理。
 

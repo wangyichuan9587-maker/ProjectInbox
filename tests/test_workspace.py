@@ -64,3 +64,10 @@ def test_clone_with_commits_missing_from_main_is_kept(system):
     git(copy, '-c', 'user.name=A', '-c', 'user.email=a@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'only in copy')
     row = by_name(Flow(manager.root).workspace_scan())[copy.name]
     assert row['action'] == 'keep' and row['unmerged'] and '主仓库里没有的提交' in row['reason']
+
+
+def test_folder_names_map_to_subtask_ids():
+    from server.workspace import _task_id
+    assert _task_id('editr-task-5.2') == 'TASK-5.2' and _task_id('task-5.10.3') == 'TASK-5.10.3'
+    assert _task_id('editr-task-5') == 'TASK-5' and _task_id('editr-task-5.backup') == 'TASK-5'
+    assert _task_id('mytask-5') is None and _task_id('editr copy', 'task_12') == 'TASK-12'

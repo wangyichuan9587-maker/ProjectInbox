@@ -138,6 +138,30 @@ def metadata(path):
     return ''
 
 
+def check_projects(projects):
+    """注册表的格式检查；读取和刷新写入前共用，保证刷新不会写出一份自己读不回来的注册表。"""
+    seen = set()
+    for p in projects:
+        if not isinstance(p, dict) or not isinstance(p.get('id'), str) or not ID_RE.fullmatch(p['id']) or p['id'] in seen:
+            raise ValueError('项目 ID 无效或重复')
+        for field in ['aliases', 'keywords', 'worktrees']:
+            if not isinstance(p.get(field, []), list) or not all(isinstance(x, str) for x in p.get(field, [])):
+                raise ValueError('项目列表字段格式错误')
+        if not isinstance(p.get('name'), str) or not isinstance(p.get('description', ''), str):
+            raise ValueError('项目名称或简介格式错误')
+        seen.add(p['id'])
+    return projects
+
+
+def unique_name(name, parent, digest, taken):
+    """看板里项目显示名称必须唯一。不同位置的同名目录（两个 web、两个 server）
+    依次加上上级目录名、短哈希来区分；已登记项目的名称从不改动，任务靠它关联项目。"""
+    for candidate in [name, f'{parent}-{name}' if parent else '', f'{name}-{digest[:6]}', f'{name}-{digest}']:
+        if candidate and candidate.casefold() not in taken:
+            return candidate
+    raise ValueError(f'项目 {name} 的显示名称无法去重，请人工核对注册表')
+
+
 class Registry:
     def __init__(self, root):
         self.store = Storage(root)
@@ -153,17 +177,7 @@ class Registry:
         value = self.store.yaml('config/projects.yaml', {'projects': []})
         if not isinstance(value, dict) or not isinstance(value.get('projects'), list):
             raise ValueError('项目注册表格式错误')
-        seen = set()
-        for p in value['projects']:
-            if not isinstance(p, dict) or not ID_RE.fullmatch(p.get('id', '')) or p['id'] in seen:
-                raise ValueError('项目 ID 无效或重复')
-            for field in ['aliases', 'keywords', 'worktrees']:
-                if not isinstance(p.get(field, []), list) or not all(isinstance(x, str) for x in p.get(field, [])):
-                    raise ValueError('项目列表字段格式错误')
-            if not isinstance(p.get('name'), str) or not isinstance(p.get('description', ''), str):
-                raise ValueError('项目名称或简介格式错误')
-            seen.add(p['id'])
-        return value['projects']
+        return check_projects(value['projects'])
 
     def allowed(self, path):
         roots = [Path(p).expanduser().resolve() for p in self.settings().get('scan_roots', [])]
@@ -242,6 +256,7 @@ class Registry:
         with self.store.lock():
             old = self.list_projects()
             result, used = [], set()
+            taken = {p['name'].casefold() for p in old}
             for group in self.discover():
                 records = group['records']
                 paths = [r['path'] for r in records]
@@ -255,9 +270,13 @@ class Registry:
                     project = dict(existing)
                     used.add(project['id'])
                 else:
-                    slug = re.sub('[^a-z0-9_-]+', '-', Path(main['path']).name.lower()).strip('-')[:55] or 'project'
+                    # ID 必须以字母或数字开头：_sandbox 这类目录名要把开头的下划线也去掉
+                    slug = re.sub('[^a-z0-9_-]+', '-', Path(main['path']).name.lower()).strip('-_')[:55] or 'project'
                     key = group['remotes'][0] if group['remotes'] else main['common_dir']
-                    project = dict(id=slug+'-'+hashlib.sha256(key.encode()).hexdigest()[:10], name=Path(main['path']).name, aliases=[], keywords=[], description=main['description'], enabled=True)
+                    digest = hashlib.sha256(key.encode()).hexdigest()
+                    name = unique_name(Path(main['path']).name, Path(main['path']).parent.name, digest, taken)
+                    taken.add(name.casefold())
+                    project = dict(id=slug+'-'+digest[:10], name=name, aliases=[], keywords=[], description=main['description'], enabled=True)
                 known_paths = [project.get('path', '')]+project.get('worktrees', [])
                 paths = sorted(set(paths + [p for p in known_paths if p and self.allowed(p)]))
                 project.update(path=main['path'], worktrees=sorted(set(paths)-{main['path']}), common_dirs=sorted(set(group['common_dirs'])), remotes=sorted(set(group['remotes'])), missing=False, last_active=max(r['last_active'] for r in records), activity_sources=sorted({s for r in records for s in r['activity_sources']}), time_bases=sorted({s for r in records for s in r['time_bases']}))
@@ -265,6 +284,7 @@ class Registry:
             for p in old:
                 if p['id'] not in used and not any(x['id']==p['id'] for x in result):
                     result.append(dict(p, missing=not any(self.allowed(x) for x in [p.get('path', '')]+p.get('worktrees', []))))
+            check_projects(result)
             self.store.write('config/projects.yaml', yaml.safe_dump({'projects': result}, allow_unicode=True, sort_keys=False), replace=True)
             return result
 

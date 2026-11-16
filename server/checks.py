@@ -3,11 +3,11 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import tempfile
 import time
 from . import workspace as ws
 
 OUTPUT_TAIL = 4000
-DRAIN_SECONDS = 10
 
 
 def evidence(evidence_dir, names, required):
@@ -24,9 +24,9 @@ def evidence(evidence_dir, names, required):
     return problems
 
 
-def commits(workspace, base_commit, previous_head='', branch=''):
+def commits(workspace, base_commit, previous_head='', branch='', base_branch=''):
     """任务分支上要有新提交，工作区不能有没提交的改动。"""
-    facts = ws.state(workspace, base_commit)
+    facts = ws.state(workspace, base_commit, base_branch)
     problems = []
     if not facts['exists']:
         return [f'工作区 {workspace} 不存在：代码必须在程序分配的工作区里改。'], facts
@@ -43,36 +43,37 @@ def commits(workspace, base_commit, previous_head='', branch=''):
     return problems, facts
 
 
-def _drain(proc):
-    """进程组已被杀掉后读剩余输出；脱离进程组的后台进程可能一直占着输出管道，限时读不完就放弃。"""
-    try:
-        output, _ = proc.communicate(timeout=DRAIN_SECONDS)
-        return output or ''
-    except subprocess.TimeoutExpired:
-        proc.stdout.close()
-        proc.wait()
-        return '（有后台进程仍占用输出，后面的输出没有读取。）'
+def _tail(log):
+    """输出文件的末尾。用 pread 读，不挪动还在写的后台进程共用的文件位置。"""
+    size = os.fstat(log.fileno()).st_size
+    window = min(size, OUTPUT_TAIL * 4)
+    return os.pread(log.fileno(), window, size - window).decode('utf-8', errors='replace')[-OUTPUT_TAIL:]
 
 
 def run_tests(workspace, command, timeout):
-    """在工作区里限时重跑交接单写的测试命令，返回 (是否通过, 输出末尾, 用时秒数)。"""
+    """在工作区里限时重跑交接单写的测试命令，返回 (是否通过, 输出末尾, 用时秒数)。
+
+    输出写进临时文件而不是管道，只等测试命令自己退出：它留下的后台进程（预览服务之类）
+    就算一直占着输出，也不会让已经跑完的测试被判成超时，更不会卡住汇报。
+    """
     if command.strip().lower() == 'none':
         return None, '交接单写明项目没有测试（tests: none），跳过。', 0
     shell = os.environ.get('SHELL') or '/bin/bash'
     if not Path(shell).is_absolute() or not Path(shell).exists():
         shell = '/bin/bash' if Path('/bin/bash').exists() else '/bin/sh'
     started = time.monotonic()
-    try:
-        proc = subprocess.Popen([shell, '-lc', command], cwd=workspace, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, errors='replace', start_new_session=True)
-    except OSError as error:
-        return False, f'测试命令启动失败：{error}', 0
-    try:
-        output, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    with tempfile.TemporaryFile() as log:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        output = _drain(proc)
-        return False, f'测试超过 {timeout} 秒没跑完，已停止。\n' + (output or '')[-OUTPUT_TAIL:], round(time.monotonic() - started)
-    return proc.returncode == 0, (output or '')[-OUTPUT_TAIL:], round(time.monotonic() - started)
+            proc = subprocess.Popen([shell, '-lc', command], cwd=workspace, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as error:
+            return False, f'测试命令启动失败：{error}', 0
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait()
+            return False, f'测试超过 {timeout} 秒没跑完，已停止。\n' + _tail(log), round(time.monotonic() - started)
+        return proc.returncode == 0, _tail(log), round(time.monotonic() - started)

@@ -159,7 +159,7 @@ def validate_handoff(data, projects):
     if not isinstance(data, dict):
         raise ContractError(['交接单必须是一个对象（YAML 或 JSON 的键值表）。'])
     problems = []
-    unknown = sorted(set(data) - set(HANDOFF_FIELDS) - {'version'})
+    unknown = sorted(str(k) for k in set(data) - set(HANDOFF_FIELDS) - {'version'})
     if unknown:
         problems.append('不认识的字段：' + '、'.join(unknown) + '。可用字段见 get_handoff_template。')
     if data.get('version') not in [None, HANDOFF_VERSION]:
@@ -221,6 +221,7 @@ def validate_handoff(data, projects):
             seen.add(ident)
             if kind not in KINDS:
                 problems.append(f'acceptance {ident} 的 kind 只能是：{"、".join(KINDS)}。')
+                kind = None
             if _blank(body) or not isinstance(body, str):
                 problems.append(f'acceptance {ident} 缺少 text：写清打开哪里、做什么、看到什么。')
                 body = ''
@@ -318,7 +319,7 @@ def validate_report(data, handoff, task_id):
     if not isinstance(data, dict):
         raise ContractError(['汇报单必须是一个对象（YAML 或 JSON 的键值表）。'], '汇报单')
     problems = []
-    unknown = sorted(set(data) - set(REPORT_FIELDS) - {'version'})
+    unknown = sorted(str(k) for k in set(data) - set(REPORT_FIELDS) - {'version'})
     if unknown:
         problems.append('不认识的字段：' + '、'.join(unknown) + '。可用字段见 get_report_template。')
     if data.get('version') not in [None, REPORT_VERSION]:
