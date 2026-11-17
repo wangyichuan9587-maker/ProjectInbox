@@ -111,6 +111,47 @@ def ensure_worktree(project_path, task_id, inherit=None):
     return dict(repo=str(repo), workspace=str(workspace.resolve()), branch=branch, base_branch=base_branch, base_commit=base_commit, reused=exists)
 
 
+def adopt_worktree(project_path, task_id, here):
+    """把会话自己已经在用的 worktree 当成任务工作区（领取时 --here）。
+
+    Claude Code 桌面版会给会话单独建一个 worktree（.claude/worktrees/…），程序再在 .worktrees/ 建一个，
+    会话的编辑保护就会拦下对后者的修改（TASK-127、128、130、132 都撞上了）。这里改为在会话的 worktree 里
+    开出任务分支，其余规矩（任务分支、只认提交、汇报核验）不变。只接受同一仓库里、干净的附属 worktree；
+    项目主目录不行，否则 agent 会直接改用户的主工作区。
+    """
+    repo = repo_root(project_path)
+    target = Path(here).expanduser()
+    if not target.is_absolute() or not target.is_dir():
+        raise ValueError(f'--here 要给会话所在文件夹的绝对路径：{here}')
+    top = git(target, 'rev-parse', '--show-toplevel', check=False)
+    if top.returncode:
+        raise ValueError(f'{here} 不是 git 工作区')
+    target = Path(top.stdout.strip()).resolve()
+    common = lambda p: Path(git(p, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve()
+    if common(target) != common(repo):
+        raise ValueError(f'{target} 不属于项目仓库 {repo}，不能用来做这张卡')
+    if target == repo:
+        raise ValueError(f'{target} 是项目主目录，不能直接在里面做任务；去掉 --here，让程序在 .worktrees/ 建工作区')
+    dirty = [line for line in git(target, 'status', '--porcelain', '--untracked-files=all').splitlines() if line.strip()]
+    if dirty:
+        raise ValueError(f'{target} 里有 {len(dirty)} 处没提交的改动，先提交或撤销再领取')
+    branch = branch_name(task_id)
+    base_branch = current_branch(repo)
+    if branch_head(repo, branch):
+        holder = next((w['path'] for w in worktrees(repo) if w['branch'] == branch and w['path'] != str(target)), None)
+        if holder:
+            raise ValueError(f'任务分支 {branch} 已经在 {holder} 里打开着；去掉 --here 沿用那个工作区')
+        if git(target, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False).stdout.strip() != branch:
+            git(target, 'switch', '--quiet', branch)
+        base_commit = git(repo, 'merge-base', base_branch, branch)
+        reused = True
+    else:
+        base_commit = git(repo, 'rev-parse', 'HEAD')
+        git(target, 'switch', '--quiet', '-c', branch, base_commit)
+        reused = False
+    return dict(repo=str(repo), workspace=str(target), branch=branch, base_branch=base_branch, base_commit=base_commit, reused=reused, adopted=True)
+
+
 def branch_head(repo, branch):
     """任务分支当前指向的提交；分支不存在时返回空字符串。"""
     result = git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}^{{commit}}', check=False)
@@ -133,8 +174,31 @@ def state(workspace, base_commit, base_branch=''):
     if known and base_branch and branch_head(path, base_branch):
         known.append('refs/heads/' + base_branch)
     log = git(path, 'log', '--format=%h %s', 'HEAD', '--not', *known) if known else ''
+    if not log.strip() and len(known) == 2 and branch and head != base_commit:
+        # 任务分支整个已经并进主分支（用户先合并、部署了）时，上面那条会把任务自己的提交也当成「主分支上已有的」。
+        # 这时改认任务分支自己的记录：在这个分支上 commit / cherry-pick / revert 出来的提交才算新提交，
+        # 单纯快进或变基到最新主分支不会留下这些记录，原来的防护不受影响。
+        made = _made_on_branch(path, branch)
+        log = '\n'.join(line for line in git(path, 'log', '--format=%H %h %s', 'HEAD', '--not', base_commit).splitlines() if line.split(' ', 1)[0] in made)
+        log = '\n'.join(line.split(' ', 1)[1] for line in log.splitlines())
     dirty = [line for line in git(path, 'status', '--porcelain', '--untracked-files=all').splitlines() if line.strip()]
     return dict(exists=True, head=head, branch=branch, commits=[l for l in log.splitlines() if l.strip()], dirty=dirty)
+
+
+MADE_HERE = ('commit', 'cherry-pick', 'revert', 'am')
+
+
+def _made_on_branch(path, branch):
+    """任务分支 reflog 里由 commit / cherry-pick / revert / am 产生的提交（完整哈希）。"""
+    result = git(path, 'reflog', 'show', '--format=%H %gs', 'refs/heads/' + branch, check=False)
+    if result.returncode:
+        return set()
+    made = set()
+    for line in result.stdout.splitlines():
+        sha, _, subject = line.partition(' ')
+        if subject.split(':', 1)[0].split(' ', 1)[0] in MADE_HERE:
+            made.add(sha)
+    return made
 
 
 def merge_fast_forward(repo, branch, base_branch):

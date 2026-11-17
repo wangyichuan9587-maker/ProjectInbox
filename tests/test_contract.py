@@ -58,6 +58,11 @@ def test_current_state_and_verify_must_be_explicit():
     assert validate_handoff(handoff(current_state={'investigated': False}), PROJECTS)['current_state']['notes'] == '未调查'
     refused(handoff(verify={'tests': '', 'screenshots': True}), 'verify.tests')
     assert validate_handoff(handoff(verify={'tests': 'none', 'screenshots': False}), PROJECTS)['verify']['tests'] == 'none'
+    # 说明文字混进命令：交交接单时就退回，不等到汇报时才因「命令跑不通」拒收（TASK-124、126）
+    refused(handoff(verify={'tests': '跑一下单元测试看看', 'screenshots': False}), '说明文字')
+    refused(handoff(verify={'tests': 'npm run build（改了纯函数时再加 npm test）', 'screenshots': False}), '说明文字')
+    # 引号里的中文（路径、测试名）照常放行
+    assert validate_handoff(handoff(verify={'tests': 'uv run pytest "tests/中文 用例.py" -k \'上传\'', 'screenshots': False}), PROJECTS)['verify']['tests'].startswith('uv run')
 
 
 def test_unknown_fields_and_multiple_problems_reported_together():

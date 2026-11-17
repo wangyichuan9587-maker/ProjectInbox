@@ -94,9 +94,9 @@ def build_server(root):
         return invoke(flow.submit_handoff, handoff,author)
 
     @mcp.tool()
-    def claim_tasks(agent: str,task_ids: list[str] | None=None,project_id: str | None=None,limit: int=1) -> dict:
-        """领取待办里带合格交接单的卡：按编号领，或按项目领前 limit 张（最多 5）。程序在项目的 .worktrees/task-编号 建好工作区并返回领取包（交接单、工作区路径、截图目录、规矩、空汇报单）。同一张卡不能被两个会话同时领。"""
-        return invoke(flow.claim_tasks, agent,task_ids,project_id,limit)
+    def claim_tasks(agent: str,task_ids: list[str] | None=None,project_id: str | None=None,limit: int=1,here: str | None=None) -> dict:
+        """领取待办里带合格交接单的卡：按编号领，或按项目领前 limit 张（最多 5）。程序在项目的 .worktrees/task-编号 建好工作区并返回领取包（交接单、工作区路径、截图目录、规矩、空汇报单）。同一张卡不能被两个会话同时领。会话本身已在该项目的独立 worktree 里（如 Claude Code 桌面版的 .claude/worktrees/…）时，here 填会话目录的绝对路径、只领一张，程序就在那里开任务分支。"""
+        return invoke(flow.claim_tasks, agent,task_ids,project_id,limit,here)
 
     @mcp.tool()
     def release_task(task_id: str,reason: str,agent: str) -> dict:

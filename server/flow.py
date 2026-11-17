@@ -23,7 +23,7 @@ CANCELLED_LABEL = '已取消'
 FLOW_LABELS = {HANDOFF_LABEL, WAITING_LABEL, REJECTED_LABEL, CANCELLED_LABEL}
 PRIORITY_ORDER = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3}
 CLAIM_RULES = [
-    '只在 workspace 这个文件夹里改代码，不要自己另建 worktree、不要复制项目文件夹。',
+    '只在 workspace 这个文件夹里改代码，不要自己另建 worktree、不要复制项目文件夹。会话本身已在这个项目的独立 worktree 里时，领取加 here（命令行 --here 会话目录），程序就直接用它。',
     '按交接单的 scope 做，dont 里的事不要做；needs_approval 里的事先问用户。',
     '改完在 workspace 里 git commit（程序只认任务分支上的提交）。',
     '截图存到 evidence_dir，文件名写进汇报单。',
@@ -131,8 +131,11 @@ class Flow:
             return '交接单还有待确认问题'
         return ''
 
-    def claim_tasks(self, agent, task_ids=None, project_id=None, limit=1):
+    def claim_tasks(self, agent, task_ids=None, project_id=None, limit=1, here=None):
+        """here：会话自己所在的 worktree。给了就在那里开任务分支，不再另建 .worktrees/task-编号。"""
         agent = self._agent(agent)
+        if here and (task_ids is None or len([task_ids] if isinstance(task_ids, str) else task_ids) != 1):
+            raise ValueError('--here 一次只能领一张卡，并且要写明编号')
         if not isinstance(limit, int) or not 1 <= limit <= 5:
             raise ValueError('一次最多领 5 张卡')
         if task_ids is not None:
@@ -166,17 +169,25 @@ class Flow:
                         raise ValueError('项目已停用或目录不存在')
                     previous = self.claim(task_id) or {}
                     inherit = handoff.get('inherit') or (previous if previous.get('workspace') else None)
-                    space = ws.ensure_worktree(proj['path'], task_id, inherit)
+                    if here and not (inherit and Path(inherit['workspace']).is_dir()):
+                        space = ws.adopt_worktree(proj['path'], task_id, here)
+                    else:
+                        # 返工或放回后再领：沿用原来的工作区（提交都在那边），here 不生效
+                        space = ws.ensure_worktree(proj['path'], task_id, inherit)
                 except (ValueError, OSError) as error:
                     refused.append(dict(task_id=task_id, reason='建工作区失败：' + str(error)[:300]))
                     continue
                 now = self._now()
-                record = dict(task_id=task_id, agent=agent, claimed_at=now, active=True, project=proj['id'], **{k: space[k] for k in ['repo', 'workspace', 'branch', 'base_branch', 'base_commit']}, reported_head=previous.get('reported_head', ''), history=previous.get('history', []) + [dict(event='claim', agent=agent, at=now)])
+                record = dict(task_id=task_id, agent=agent, claimed_at=now, active=True, project=proj['id'], **{k: space[k] for k in ['repo', 'workspace', 'branch', 'base_branch', 'base_commit']}, adopted=bool(space.get('adopted') or previous.get('adopted')), reported_head=previous.get('reported_head', ''), history=previous.get('history', []) + [dict(event='claim', agent=agent, at=now)])
                 # 先改卡片状态再记领取：状态改失败时卡片仍在待办、也没有领取记录，不会出现两个会话同时领到
                 self._edit(task_id, '--status', STATES['in_progress'], '--assignee', '@' + agent)
                 self._save('claims', task_id, record)
-                self._note(task_id, f'{agent} 领取。工作区 {space["workspace"]}（分支 {space["branch"]}，{"沿用已有" if space["reused"] else "新建"}）。')
-                claimed.append(dict(task_id=task_id, title=task['title'], project=proj['id'], workspace=space['workspace'], branch=space['branch'], base_branch=space['base_branch'], evidence_dir=str(self.evidence_dir(task_id)), handoff={k: v for k, v in handoff.items() if k not in ['inherit']}, rules=CLAIM_RULES, report_template=report_template(handoff, task_id)['blank']))
+                self._note(task_id, f'{agent} 领取。工作区 {space["workspace"]}（分支 {space["branch"]}，{"沿用已有" if space["reused"] else "新建"}{"，用的是会话自己的文件夹" if space.get("adopted") else ""}）。')
+                if here and not space.get('adopted'):
+                    claimed_note = f"这张卡已有工作区，沿用 {space['workspace']}，--here 没有生效：请到那个文件夹里改。"
+                else:
+                    claimed_note = ''
+                claimed.append(dict(task_id=task_id, title=task['title'], project=proj['id'], workspace=space['workspace'], note=claimed_note, branch=space['branch'], base_branch=space['base_branch'], evidence_dir=str(self.evidence_dir(task_id)), handoff={k: v for k, v in handoff.items() if k not in ['inherit']}, rules=CLAIM_RULES, report_template=report_template(handoff, task_id)['blank']))
         return dict(claimed=claimed, refused=refused, message=f'领到 {len(claimed)} 张卡' + (f'，{len(refused)} 张没领到' if refused else '') + '。')
 
     def _active_claim(self, task_id, agent=None):
@@ -293,10 +304,14 @@ class Flow:
                 result['merged_head'] = ws.merge_fast_forward(claim['repo'], claim['branch'], claim['base_branch'])
                 result['merged'] = True
                 # 合并已经完成，删工作区失败不能让卡片停在待验收：照常标完成，把原因写进结果和备注
-                try:
-                    result['workspace_removed'] = ws.remove_worktree(claim['repo'], claim['workspace'])
-                except ValueError as error:
-                    result['warning'] = str(error)
+                if claim.get('adopted'):
+                    # 会话自己的文件夹由会话所在的工具管理，程序不删；分支已合并，之后 workspace clean 可收
+                    result['warning'] = f"工作区 {claim['workspace']} 是会话自己的文件夹，没有删除"
+                else:
+                    try:
+                        result['workspace_removed'] = ws.remove_worktree(claim['repo'], claim['workspace'])
+                    except ValueError as error:
+                        result['warning'] = str(error)
             now = self._now()
             if claim:
                 claim.update(active=False, history=claim.get('history', []) + [dict(event='accept', at=now, merged=result['merged'])])
@@ -338,7 +353,7 @@ class Flow:
             self._edit(new_id, '--plan', render_plan(rework, 'ProjectInbox（退回生成）', now))
             self._save('handoffs', new_id, dict(rework, task_id=new_id, author='projectinbox', submitted_at=now))
             if claim:
-                self._save('claims', new_id, dict(task_id=new_id, agent='', claimed_at='', active=False, project=project['id'], repo=claim.get('repo'), workspace=claim.get('workspace'), branch=claim.get('branch'), base_branch=claim.get('base_branch'), base_commit=claim.get('base_commit'), reported_head=claim.get('reported_head', ''), history=[dict(event='inherit', from_task=task_id, at=now)]))
+                self._save('claims', new_id, dict(task_id=new_id, agent='', claimed_at='', active=False, project=project['id'], repo=claim.get('repo'), workspace=claim.get('workspace'), branch=claim.get('branch'), base_branch=claim.get('base_branch'), base_commit=claim.get('base_commit'), adopted=claim.get('adopted', False), reported_head=claim.get('reported_head', ''), history=[dict(event='inherit', from_task=task_id, at=now)]))
                 claim.update(active=False, transferred_to=new_id, history=claim.get('history', []) + [dict(event='reject', at=now, comment=comment)])
                 self._save('claims', task_id, claim)
             self._note(new_id, f'由 {task_id} 退回生成。退回意见：{comment}' + (f'。领取时沿用工作区 {claim["workspace"]}。' if claim.get('workspace') else ''))
@@ -355,7 +370,7 @@ class Flow:
                 raise ValueError(f'{task_id} 已经是 {task["status"]}')
             claim = self.claim(task_id)
             removed = False
-            if claim and claim.get('workspace') and Path(claim['workspace']).exists():
+            if claim and claim.get('workspace') and Path(claim['workspace']).exists() and not claim.get('adopted'):
                 removed = ws.remove_worktree(claim['repo'], claim['workspace'])
             if claim:
                 claim.update(active=False, history=claim.get('history', []) + [dict(event='cancel', at=self._now(), reason=reason)])
@@ -404,13 +419,33 @@ class Flow:
         if claim and claim.get('active'):
             raise ValueError(f'{task_id} 正由 {claim["agent"]} 领取中，状态只能通过 submit-report / release 推进')
 
+    def note(self, task_id, text):
+        """往卡片备注末尾追加一段（自动带时间），不改前面的内容。
+
+        此前没有这条命令，会话想补一句备注只能用 update 整段改写 notes，有一次还把整段覆盖了（TASK-132）。
+        """
+        self.tasks._id(task_id)
+        if not isinstance(text, str) or not text.strip() or len(text) > 4000:
+            raise ValueError('备注不能为空，最多 4000 字')
+        with self.store.lock():
+            self.tasks.get_task(task_id, _locked=True)
+            self._note(task_id, text.strip())
+            task = self.tasks.get_task(task_id, _locked=True)
+        return dict(task_id=task_id, status=task['status'], notes_tail=task['notes'][-300:])
+
     def done(self, task_id):
-        """命令行 done：有工作区的卡等同 accept --no-merge，只标完成、不合并，合并仍要用户明确运行 accept。"""
+        """命令行 done：用户说「验收通过」时跑的就是它。
+
+        有工作区的卡等同 accept：一次完成标完成 + 快进合并 + 删工作区。此前 done 只标完成不合并，
+        用户每次还得再说一遍「合并」（TASK-127、128、132、142）。只想标完成用 accept --no-merge。
+        合并不了时卡片留在待验收，错误原样交给用户决定。
+        """
         claim = self.claim(task_id)
         if claim and claim.get('workspace'):
-            result = self.accept(task_id, merge=False)
-            result['hint'] = f"只标了完成，没有合并：改动还在分支 {claim['branch']}（工作区 {claim['workspace']}）。要合并请运行 project-inbox accept {task_id}。"
-            return result
+            try:
+                return self.accept(task_id)
+            except ValueError as error:
+                raise ValueError(f'{error}（卡片没有改动。只想标完成、不合并：project-inbox accept {task_id} --no-merge）') from error
         return self.tasks.update_task(task_id, status='done')
 
     # ---------- 工作区清理（第 3 步） ----------

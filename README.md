@@ -25,8 +25,10 @@
 project-inbox handoff-template
 project-inbox submit-handoff --file 交接单.yaml --author pi
 project-inbox claim TASK-ID --agent codex
+project-inbox claim TASK-ID --agent claude-code --here "$(pwd)"   # 会话自带 worktree 时
 project-inbox submit-report --file 汇报单.yaml --agent codex
-project-inbox accept TASK-ID
+project-inbox done TASK-ID             # 验收通过：标完成 + 快进合并 + 删工作区（同 accept）
+project-inbox note TASK-ID --text "补一句"
 project-inbox reject TASK-ID --comment "意见"
 project-inbox cancel TASK-ID
 project-inbox workspace scan

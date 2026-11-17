@@ -19,6 +19,7 @@ def claim_handoff(cli, tasks, deploy=False):
 
 1. 领取：有 Project Inbox 的 MCP 工具就调用 claim_tasks（agent 填你的名字，task_ids 填上面的编号）；没有就运行
 {cli} claim {' '.join(shlex.quote(i) for i in ids)} --agent <你的名字>
+你的会话本身已经在这个项目的独立 worktree 里（例如 Claude Code 桌面版的 .claude/worktrees/…）、并且只领一张时，加 --here <会话目录>（MCP 传 here），程序就直接用这个文件夹。
 返回的领取包里有交接单、工作区路径（workspace）、截图目录（evidence_dir）和空汇报单。领取被拒绝就停下告诉我原因。
 2. 只在 workspace 里改代码并 git commit，不要另建 worktree 或复制项目文件夹。按交接单的 scope 做，dont 里的不做，needs_approval 里的先问我。
 3. 按交接单 acceptance 逐条验证，截图存进 evidence_dir。

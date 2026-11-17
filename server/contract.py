@@ -24,12 +24,22 @@ HANDOFF_FIELDS = {
     'scope': '{do: [这次要做的事，至少 1 条], dont: [这次不做的事，至少 1 条]}',
     'current_state': '{investigated: true/false, notes: 讨论时读过的代码和现在的行为；没读代码就 investigated: false}',
     'acceptance': '3 到 6 条验收清单：[{id: A1, kind: 参照物/必须看到/不能破坏, text: ...}]，至少 1 条必须看到、1 条不能破坏',
-    'verify': '{tests: 测试命令（项目真没有测试就写 none）, screenshots: true/false}',
+    'verify': '{tests: 能直接运行的一行测试命令，不要夹说明文字（项目真没有测试就写 none）, screenshots: true/false}',
     'open_questions': '还没定的问题；不为空时卡片留在收件箱并标「待确认」，不会被领走',
     'decisions': '（可选）讨论中已经拍板的事',
     'needs_approval': '（可选）必须先问用户的事，例如数据库改动',
     'task_id': '（可选）把交接单补到已有卡片上，例如 TASK-7；不填就新建卡片',
 }
+#: 中文字和全角标点：出现在引号外面，基本就是把说明文字写进了测试命令（TASK-124、126 都是这样被拒收的）
+PROSE = re.compile(r'[　-〿一-鿿＀-￯]')
+QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _prose_in_command(command):
+    """测试命令里引号外有中文或全角标点。引号里的中文（路径、测试名）不算。"""
+    return bool(PROSE.search(QUOTED.sub('', command)))
+
+
 REQUIRED_HANDOFF = ['project', 'title', 'why', 'goal', 'scope', 'current_state', 'acceptance', 'verify']
 
 REPORT_FIELDS = {
@@ -248,6 +258,9 @@ def validate_handoff(data, projects):
         tests = ''
     elif len(tests) > 1000 or '\n' in tests.strip() or '\x00' in tests:
         problems.append('verify.tests 必须是一行、不超过 1000 字的命令。')
+    elif _prose_in_command(tests):
+        problems.append('verify.tests 里混了说明文字（中文或全角标点），程序会把整行当命令原样执行，汇报时必然失败。'
+                        '这里只写能直接运行的命令；什么时候再加测、页面怎么看，写进 decisions 或验收清单。路径里有中文请用引号括起来。')
     screenshots = verify.get('screenshots', False) if isinstance(verify, dict) else False
     if not isinstance(screenshots, bool):
         problems.append('verify.screenshots 只能是 true 或 false。')

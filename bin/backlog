@@ -1,4 +1,10 @@
 #!/bin/sh
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 经软链接调用时（例如 ~/.local/bin/project-inbox -> 这里），先找到脚本本体再定位项目目录
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+ROOT_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 export BACKLOG_CWD="$ROOT_DIR"
 exec "$ROOT_DIR/vendor/backlog-runtime/backlog" "$@"

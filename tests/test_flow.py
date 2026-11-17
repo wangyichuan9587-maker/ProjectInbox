@@ -253,13 +253,15 @@ def test_install_skill_writes_claude_skill_without_overwriting(tmp_path):
     home = tmp_path / 'user'
     first = install(['claude', 'codex'], home=tmp_path / 'inbox', user_home=home)
     skill = home / '.claude/skills/handoff/SKILL.md'
-    assert [r['action'] for r in first] == ['已写入', '已写入']
+    assert [r['action'] for r in first] == ['已写入'] * 4
+    claim = (home / '.claude/skills/claim/SKILL.md').read_text()
+    assert claim.startswith('---\nname: claim') and '--here' in claim and '{{CLI}}' not in claim
     text = skill.read_text()
     assert text.startswith('---\nname: handoff') and 'submit_handoff' in text and '{{CLI}}' not in text and str((tmp_path / 'inbox').resolve()) in text
     assert not (home / '.codex/prompts/handoff.md').read_text().startswith('---')
     assert install(['claude'], home=tmp_path / 'inbox', user_home=home)[0]['action'] == '已是最新'
     skill.write_text('my own skill')
-    assert '未覆盖' in install(['claude'], home=tmp_path / 'inbox', user_home=home)[0]['action'] and skill.read_text() == 'my own skill'
+    assert '未覆盖' in install(['claude'], home=tmp_path / 'inbox', user_home=home, skills=['handoff'])[0]['action'] and skill.read_text() == 'my own skill'
 
 
 # ---------- 评审修复的回归测试 ----------
@@ -335,17 +337,27 @@ def test_failed_status_edit_leaves_no_claim(flow, monkeypatch):
     assert f.claim(task_id) is None and f.tasks.get_task(task_id)['status'] == 'todo'
 
 
-def test_done_marks_without_merging_then_accept_can_merge(flow):
+def test_done_merges_like_accept(flow):
+    """用户说「验收通过」时跑 done：一次完成合并，不用再说一遍「合并」。"""
     f, project = flow
     task_id, workspace = finished(f)
     base = [sys.executable, '-m', 'server.cli', '--home', str(f.root)]
     done = subprocess.run(base + ['done', task_id], capture_output=True, text=True)
-    assert done.returncode == 0 and not json.loads(done.stdout)['merged']
-    assert f.tasks.get_task(task_id)['status'] == 'done' and not (project / 'feature.txt').exists() and workspace.is_dir()
-    result = f.accept(task_id)
-    assert result['merged'] and (project / 'feature.txt').exists()
-    with pytest.raises(ValueError, match='只有待验收'):
-        f.accept(task_id)
+    assert done.returncode == 0 and json.loads(done.stdout)['merged']
+    assert f.tasks.get_task(task_id)['status'] == 'done' and (project / 'feature.txt').exists() and not workspace.exists()
+
+
+def test_done_refused_keeps_card_in_review_and_no_merge_still_possible(flow):
+    f, project = flow
+    task_id, workspace = finished(f)
+    commit(project, 'main-only.txt')
+    with pytest.raises(ValueError, match='accept .* --no-merge'):
+        f.done(task_id)
+    assert f.tasks.get_task(task_id)['status'] == 'review'
+    marked = f.accept(task_id, merge=False)
+    assert not marked['merged'] and f.tasks.get_task(task_id)['status'] == 'done'
+    git(project, 'reset', '-q', '--hard', 'HEAD~1')
+    assert f.accept(task_id)['merged'] and (project / 'feature.txt').exists()
 
 
 def test_test_timeout_does_not_hang_on_detached_background_process(tmp_path, monkeypatch):
@@ -431,6 +443,65 @@ def test_commits_already_on_main_do_not_count_as_new(flow):
     commit(workspace)
     ok = f.submit_report(plain, 'codex')
     assert ok['accepted'] and '1 个新提交' in ok['verified'][0]
+
+
+def test_report_accepted_when_task_branch_already_merged_into_main(flow):
+    """用户先把任务分支合进主分支、部署了，再让 agent 汇报：任务自己的提交照样算新提交（TASK-130）。"""
+    f, project = flow
+    task_id = f.submit_handoff(handoff(verify={'tests': 'none', 'screenshots': False}), 'claude-code')['task_id']
+    workspace = Path(f.claim_tasks('codex', [task_id])['claimed'][0]['workspace'])
+    commit(workspace)
+    git(project, 'merge', '-q', '--ff-only', task_id.lower())
+    plain = report(task_id, screenshots=[])
+    plain['acceptance']['A2'] = {'result': '实际操作验证'}
+    ok = f.submit_report(plain, 'codex')
+    assert ok['accepted'] and '1 个新提交' in ok['verified'][0]
+    result = f.accept(task_id)
+    assert result['merged'] and f.tasks.get_task(task_id)['status'] == 'done'
+
+
+def test_claim_here_uses_session_worktree(flow, tmp_path):
+    """桌面版会话自带 worktree：--here 让程序在那里开任务分支，不再另建一个让编辑保护拦下。"""
+    f, project = flow
+    session = tmp_path / 'session-wt'
+    git(project, 'worktree', 'add', '-q', '--detach', str(session))
+    task_id = f.submit_handoff(handoff(), 'claude-code')['task_id']
+    with pytest.raises(ValueError, match='一次只能领一张'):
+        f.claim_tasks('claude-code', here=str(session))
+    pack = f.claim_tasks('claude-code', [task_id], here=str(session))['claimed'][0]
+    assert pack['workspace'] == str(session.resolve()) and not (project / '.worktrees').exists()
+    assert git(session, 'symbolic-ref', '--short', 'HEAD') == task_id.lower()
+    commit(session)
+    shot(f, task_id)
+    assert f.submit_report(report(task_id), 'claude-code')['accepted']
+    result = f.done(task_id)
+    assert result['merged'] and session.is_dir() and not result['workspace_removed'] and (project / 'feature.txt').exists()
+
+
+def test_claim_here_refuses_main_checkout_and_dirty_folder(flow, tmp_path):
+    f, project = flow
+    task_id = f.submit_handoff(handoff(), 'claude-code')['task_id']
+    refused = f.claim_tasks('claude-code', [task_id], here=str(project))['refused']
+    assert refused and '项目主目录' in refused[0]['reason']
+    session = tmp_path / 'dirty-wt'
+    git(project, 'worktree', 'add', '-q', '--detach', str(session))
+    (session / 'scratch.txt').write_text('x')
+    refused = f.claim_tasks('claude-code', [task_id], here=str(session))['refused']
+    assert refused and '没提交的改动' in refused[0]['reason']
+    assert f.tasks.get_task(task_id)['status'] == 'todo'
+
+
+def test_note_command_appends_without_touching_old_notes(flow):
+    f, _ = flow
+    task_id = f.submit_handoff(handoff(), 'claude-code')['task_id']
+    before = f.tasks.get_task(task_id)['notes']
+    base = [sys.executable, '-m', 'server.cli', '--home', str(f.root)]
+    done = subprocess.run(base + ['note', task_id, '--text', '用户验收通过'], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    after = f.tasks.get_task(task_id)['notes']
+    assert after.startswith(before) and after.rstrip().endswith('用户验收通过')
+    with pytest.raises(ValueError, match='不能为空'):
+        f.note(task_id, '  ')
 
 
 def test_clean_keeps_workspace_still_used_by_rework_card(flow):

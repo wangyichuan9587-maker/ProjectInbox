@@ -25,7 +25,7 @@ flowchart LR
 | scope.do / scope.dont | 这次做 / 这次不做 | 各至少 1 条 |
 | current_state | `{investigated: true, notes: ...}` 或 `{investigated: false}` | 必须明确选 |
 | acceptance | 3–6 条 `{id: A1, kind: 参照物/必须看到/不能破坏, text}` | 少于 3 退回；多于 6 要求拆卡；至少 1 条必须看到、1 条不能破坏 |
-| verify | `{tests: 测试命令, screenshots: true/false}` | 测试命令必填，真没有写 `none` |
+| verify | `{tests: 测试命令, screenshots: true/false}` | 测试命令必填，真没有写 `none`；只能写能直接运行的命令，引号外出现中文或全角标点（把说明文字写进了命令）当场退回 |
 | open_questions | 没定的问题 | 不为空时卡片留在收件箱、标「待确认」，不能领取 |
 | decisions / needs_approval / task_id | 可选 | `task_id` 表示补到已有卡片上 |
 
@@ -35,6 +35,8 @@ flowchart LR
 
 `claim_tasks` 只领待办里带合格交接单的卡。程序在项目里建 `.worktrees/task-N`（分支 `task-N`，从项目主目录当前分支的最新提交开出），并把 `/.worktrees/` 写进该项目的 `.git/info/exclude`：只在本机生效，不改项目文件。同一张卡不能被两个会话同时领。领取包里有交接单、工作区路径、截图目录和空汇报单。
 
+**会话自带 worktree 时用 `--here`。** Claude Code 桌面版会给每个会话单独建一个 worktree（`.claude/worktrees/…`），如果程序再在 `.worktrees/` 建一个，会话的编辑保护会拦下对后者的修改。这时领取加 `--here <会话目录>`（MCP 传 `here`，一次只领一张）：程序检查它是同一仓库里、干净的附属 worktree（项目主目录不行），在里面开出任务分支 `task-N`，之后的汇报核验完全一样。验收合并后程序不删这个文件夹，它归会话所在的工具管。已有工作区的卡（放回、受阻、返工后再领）照旧沿用原工作区，`--here` 不生效，领取包的 `note` 会说明。
+
 做不了用 `release_task` 放回并写原因，工作区保留，下次领取沿用。工作区文件夹被手动删掉时，再次领取会按任务分支重建（已提交的改动都还在分支上），不会领到一个不存在的路径。
 
 ## 汇报单 report/v1：程序当场核验
@@ -42,7 +44,7 @@ flowchart LR
 `submit_report` 先查格子（每条验收 A1、A2……都要有结果，「未测」必须写原因，要有 Mermaid 流程图），再查事实：
 
 1. 截图文件真的在 `work/evidence/TASK-N/` 里，而且不是空文件；
-2. 工作区停在任务分支 `task-N` 上（切到别的分支提交会被拒收），任务分支上有新提交，工作区没有没提交的改动（返工时必须比上次汇报多出新提交）。主分支上已有的提交不算新提交：只把任务分支快进或变基到最新主分支，不等于提交了改动；
+2. 工作区停在任务分支 `task-N` 上（切到别的分支提交会被拒收），任务分支上有新提交，工作区没有没提交的改动（返工时必须比上次汇报多出新提交）。主分支上已有的提交不算新提交：只把任务分支快进或变基到最新主分支，不等于提交了改动。例外是任务分支已经整个并进主分支（例如你先让会话合并、部署了）：这时按任务分支自己的 reflog 认，在这个分支上 commit / cherry-pick / revert 出来的提交照样算新提交，汇报能正常交；
 3. 程序自己在工作区重跑交接单的测试命令（默认限时 900 秒，可在 `config/settings.yaml` 设 `verify_timeout_seconds`；超时就停掉整个进程组。测试输出写进临时文件，程序只等测试命令自己退出：它留下的后台进程即使一直占着输出，也不会把已经跑完的测试判成超时，更不会卡住汇报）。
 
 全部通过才进待验收，汇报内容和核验结果写进卡片的「最终总结」，验收勾选框按结果打勾。不过就拒收，卡片停在进行中，原因写进 notes。
@@ -52,9 +54,9 @@ flowchart LR
 ## 只有你能做的三件事（命令行，不进 MCP）
 
 ```bash
-project-inbox accept TASK-N              # 验收通过：快进合并到主分支，删工作区，分支保留
-project-inbox accept TASK-N --no-merge   # 只标完成，不动 git
-project-inbox done TASK-N                # 同 --no-merge：只标完成、不合并；之后仍可用 accept 补做合并
+project-inbox done TASK-N                # 验收通过（会话听到「验收通过」时跑的就是它）：同 accept，一次完成标完成 + 快进合并 + 删工作区
+project-inbox accept TASK-N              # 同上
+project-inbox accept TASK-N --no-merge   # 只标完成，不动 git；之后仍可用 accept 补做合并
 project-inbox reject TASK-N --comment "橙色太刺眼"   # 原卡归档并标「已退回」，生成返工卡，沿用同一个工作区
 project-inbox cancel TASK-N --reason "不做了"        # 删干净的工作区，分支保留，卡片归档
 ```
@@ -75,14 +77,21 @@ project-inbox workspace clean --apply   # 真正执行
 
 文件夹对应哪个任务先看领取记录，再看名字：返工卡沿用原卡的工作区，文件夹名还是原卡的编号，只要返工卡还没完成就不会被清理。子任务的文件夹（`task-5.2`）对应子任务 TASK-5.2，不会算到 TASK-5 头上。
 
-## /handoff 技能
+## 往备注里补一句
 
 ```bash
-uv run python -m scripts.install_skills              # 装到 Claude Code：~/.claude/skills/handoff/SKILL.md
+project-inbox note TASK-N --text "要补的话"   # 只往后追加，自动带时间，不改原有内容
+```
+
+## /handoff 与 /claim 技能
+
+```bash
+uv run python -m scripts.install_skills                  # 两个都装到 Claude Code：~/.claude/skills/{handoff,claim}/SKILL.md
+uv run python -m scripts.install_skills --skill claim    # 只装 /claim
 uv run python -m scripts.install_skills --target codex   # 装成 Codex 自定义提示
 ```
 
-已有同名文件且内容不同时不覆盖（加 `--force` 才覆盖）。没有技能目录的 agent，把 `prompts/handoff-skill.md` 的文字贴进对话即可，它会改用命令行 `submit-handoff` 提交。
+已有同名文件且内容不同时不覆盖（加 `--force` 才覆盖）。没有技能目录的 agent，把 `prompts/handoff-skill.md` 或 `prompts/claim-skill.md` 的文字贴进对话即可，它会改用命令行。
 
 ## 看板上的「复制给 Agent」
 
